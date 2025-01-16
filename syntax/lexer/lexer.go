@@ -15,7 +15,7 @@ type TokenType int
 const (
 	EOF TokenType = iota
 	ERROR
-
+	
 	// Keywords
 	CLASS
 	INHERITS
@@ -34,16 +34,16 @@ const (
 	NEW
 	OF
 	NOT
-
+	
 	// Data types
 	STR_CONST
 	BOOL_CONST
 	INT_CONST
-
+	
 	// Identifiers
 	TYPEID
 	OBJECTID
-
+	
 	// Operators
 	ASSIGN // <-
 	DARROW // =>
@@ -82,10 +82,12 @@ type Token struct {
 
 // Lexer is the lexical analyzer.
 type Lexer struct {
-	reader *bufio.Reader
-	line   int
-	column int
-	char   rune
+	reader      *bufio.Reader
+	line        int
+	column      int
+	startLine   int
+	startColumn int
+	char        rune
 }
 
 // NewLexer creates a new lexer from an io.Reader
@@ -105,8 +107,9 @@ func (l *Lexer) readChar() {
 	l.char, _, err = l.reader.ReadRune()
 	if err != nil {
 		l.char = 0 // EOF
+		return
 	}
-
+	
 	l.column++
 	if l.char == '\n' {
 		l.line++
@@ -159,17 +162,23 @@ func (l *Lexer) readIdentifier() string {
 
 func (l *Lexer) readString() (string, error) {
 	var sb strings.Builder
-	l.readChar()
+	l.readChar() // consume opening quote
+	
 	for l.char != '"' {
+		// Check for EOF
 		if l.char == 0 {
 			return "", fmt.Errorf("EOF in string constant")
 		}
+		// Check for unescaped newline
 		if l.char == '\n' {
-			return "", fmt.Errorf("Unterminitaed string constant")
+			return "", fmt.Errorf("Unterminated string constant")
 		}
-
+		// Handle escape sequences
 		if l.char == '\\' {
 			l.readChar()
+			if l.char == 0 {
+				return "", fmt.Errorf("EOF in string constant")
+			}
 			switch l.char {
 			case 'b':
 				sb.WriteRune('\b')
@@ -183,34 +192,52 @@ func (l *Lexer) readString() (string, error) {
 				sb.WriteRune('\\')
 			case '"':
 				sb.WriteRune('"')
-			case '0':
-				sb.WriteRune(0)
 			default:
-				sb.WriteRune(l.char)
+				return "", fmt.Errorf("Invalid escape sequence in string")
 			}
 		} else {
 			sb.WriteRune(l.char)
 		}
-
 		l.readChar()
 	}
-
+	
+	// Consume closing quote
 	l.readChar()
+	
+	// Check string length
+	if sb.Len() > 1024 {
+		return "", fmt.Errorf("String constant too long")
+	}
+	
+	// Check for null characters
+	if strings.Contains(sb.String(), "\000") {
+		return "", fmt.Errorf("String contains null character")
+	}
+	
 	return sb.String(), nil
 }
 
 func (l *Lexer) NextToken() Token {
 	l.skipWhiteSpace()
-
+	
+	l.startLine = l.line
+	l.startColumn = l.column
+	
 	tok := Token{
-		Line:   l.line,
-		Column: l.column,
+		Line:   l.startLine,
+		Column: l.startColumn,
 	}
-
+	
 	switch {
+	case l.char == '@':
+		tok.Type = AT
+		tok.Literal = "@"
+		l.readChar()
 	case l.char == 0:
 		tok.Type = EOF
 		tok.Literal = ""
+		fmt.Printf("Debug - EOF reached at line: %d, column: %d\n", l.line, l.column)
+	
 	case l.char == '(':
 		tok.Type = LPAREN
 		tok.Literal = "("
@@ -255,17 +282,32 @@ func (l *Lexer) NextToken() Token {
 	// TODO: add support for Multi line comment
 	case l.char == '/':
 		if l.peekChar() == '/' {
-			// This is a single line comment
+			// Single line comment
 			for l.char != '\n' && l.char != 0 {
 				l.readChar()
 			}
-			return l.NextToken() // Skip the comment and get the next token
+			return l.NextToken()
+		} else if l.peekChar() == '*' {
+			// Multi-line comment
+			l.readChar() // consume '/'
+			l.readChar() // consume '*'
+			for {
+				if l.char == 0 {
+					return Token{Type: ERROR, Literal: "EOF in comment", Line: l.line, Column: l.column}
+				}
+				if l.char == '*' && l.peekChar() == '/' {
+					l.readChar() // consume '*'
+					l.readChar() // consume '/'
+					return l.NextToken()
+				}
+				l.readChar()
+			}
 		} else {
 			tok.Type = DIVIDE
 			tok.Literal = "/"
 			l.readChar()
 		}
-
+	
 	case l.char == '~':
 		tok.Type = NEG
 		tok.Literal = "~"
@@ -376,6 +418,6 @@ func (l *Lexer) NextToken() Token {
 		tok.Literal = fmt.Sprintf("Unexpected character: %c", l.char)
 		l.readChar()
 	}
-
+	
 	return tok
 }
